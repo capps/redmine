@@ -22,6 +22,19 @@ class SearchController < ApplicationController
   include MessagesHelper
 
   def index
+    @object_types = Redmine::Search.available_search_types.dup
+    orig_parms = params.clone
+    
+
+    params[:q] = session[:s_q] unless params[:q].present?
+    params[:scope] = session[:s_scope] unless params[:scope].present?
+    params[:all_words] = session[:s_all_words] unless params[:all_words].present?
+    params[:titles_only] = session[:s_titles_only] unless params[:titles_only].present?
+    params[:num_results] = session[:s_num_results] unless params[:num_results].present?
+    @object_types.each do |t|
+      params[t] = session["s_#{t}".to_sym] if params[t].blank? && session["s_#{t}".to_sym].present?
+    end
+
     @question = params[:q] || ""
     @question.strip!
     @all_words = params[:all_words] || (params[:submit] ? false : true)
@@ -48,7 +61,19 @@ class SearchController < ApplicationController
       return
     end
     
-    @object_types = Redmine::Search.available_search_types.dup
+    session[:s_q] = orig_parms[:q]
+    session[:s_scope] = orig_parms[:scope]
+    session[:s_all_words] = orig_parms[:all_words]
+    session[:s_titles_only] = orig_parms[:titles_only]
+    session[:s_num_results] = orig_parms[:num_results]
+    @object_types.each do |t| 
+      if orig_parms[t].present?
+        session["s_#{t}".to_sym] = orig_parms[t]
+      else
+        session.delete("s_#{t}".to_sym)
+      end
+    end
+    
     if projects_to_search.is_a? Project
       # don't search projects
       @object_types.delete('projects')
