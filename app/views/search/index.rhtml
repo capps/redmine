@@ -7,7 +7,8 @@
 <%= project_select_tag %>
 <label><%= check_box_tag 'all_words', 1, @all_words %> <%= l(:label_all_words) %></label>
 <label><%= check_box_tag 'titles_only', 1, @titles_only %> <%= l(:label_search_titles_only) %></label>
-&nbsp;&nbsp;&nbsp;Number of results <%= number_results_tag %>
+&nbsp;&nbsp;&nbsp;
+<label> <%= l(:label_number_of_results) %> <%= number_results_tag %></label>
 </p>
 <p>
 <% @object_types.each do |t| %>
