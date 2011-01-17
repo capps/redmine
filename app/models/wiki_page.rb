@@ -59,6 +59,10 @@ class WikiPage < ActiveRecord::Base
     @previous_title = read_attribute(:title) if @previous_title.blank?
     write_attribute(:title, value)
   end
+  
+  def project_id      # for unified search results to work (need to be able to get to project of wiki)
+    wiki.project_id
+  end
 
   def before_save
     self.title = Wiki.titleize(title)    

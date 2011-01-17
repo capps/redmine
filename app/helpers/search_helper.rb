@@ -50,6 +50,10 @@ module SearchHelper
     select_tag('scope', options_for_select(options, params[:scope].to_s)) if options.size > 1
   end
   
+  def number_results_tag
+    select_tag('num_results', options_for_select([[10, 10],[25, 25],[50,50],['all',10000000]], params[:num_results].to_i)) #10000000 is an arbitrarily large integer -- if you have that big of a project, you're doomed
+  end
+  
   def render_results_by_type(results_by_type)
     links = []
     # Sorts types by results count

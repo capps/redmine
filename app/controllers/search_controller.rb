@@ -72,7 +72,7 @@ class SearchController < ApplicationController
       @results = []
       @results_by_type = Hash.new {|h,k| h[k] = 0}
       
-      limit = 10
+      limit = [params[:num_results].to_i, 10].max  # Guard against bigus params
       @scope.each do |s|
         r, c = s.singularize.camelcase.constantize.search(@tokens, projects_to_search,
           :all_words => @all_words,
@@ -83,7 +83,12 @@ class SearchController < ApplicationController
         @results += r
         @results_by_type[s] += c
       end
-      @results = @results.sort {|a,b| b.event_datetime <=> a.event_datetime}
+      #if we're doing "all results" it's > 100, so group by project
+      if limit > 100
+        @results = @results.sort {|a,b| (a.is_a?(Project) || b.is_a?(Project))? b.event_datetime <=> a.event_datetime : (a.project_id != b.project_id ? a.project.name <=> b.project.name : b.event_datetime <=> a.event_datetime)}
+      else
+        @results = @results.sort {|a,b| b.event_datetime <=> a.event_datetime}
+      end
       if params[:previous].nil?
         @pagination_previous_date = @results[0].event_datetime if offset && @results[0]
         if @results.size > limit
