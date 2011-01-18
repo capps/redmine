@@ -23,15 +23,40 @@ class SearchController < ApplicationController
 
   def index
     @object_types = Redmine::Search.available_search_types.dup
-    orig_params = params.clone
     
-
-    params[:scope] = cookies[:s_scope] unless params[:scope].present?
-    params[:all_words] = cookies[:s_all_words] unless params[:all_words].present?
-    params[:titles_only] = cookies[:s_titles_only] unless params[:titles_only].present?
-    params[:num_results] = cookies[:s_num_results] unless params[:num_results].present?
-    @object_types.each do |t|
-      params[t] = cookies["s_#{t}".to_sym] if params[t].blank? && cookies["s_#{t}".to_sym].present?
+    # the cases are -- if submitted, then we can deduce the user's intent BUT since this controller
+    # is invoked from the search index page and the "short form" elsewhere, we have to differentiate those cases
+    # the index page has a scope setting, so that determines where we came from
+    # Since check boxes are inferred from their absence, they require special handling
+    
+    if params[:submit] && params[:scope]      # we came from index page, so all params are "good"
+      cookies[:s_scope] = params[:scope]
+      cookies[:s_num_results] = params[:num_results]
+      if params[:s_all_words].present?
+        cookies[:s_all_words] = '1'
+      else
+        cookies.delete(:s_all_words)      
+      end
+      if params[:s_titles_only].present?
+        cookies[:s_titles_only] = '1'
+      else
+        cookies.delete(:s_titles_only)
+      end
+      @object_types.each do |t| 
+        if params[t].present?
+          cookies["s_#{t}".to_sym] = '1'
+        else
+          cookies.delete("s_#{t}".to_sym)
+        end
+      end
+    else
+      params[:scope] = cookies[:s_scope] unless params[:scope].present?
+      params[:num_results] = cookies[:s_num_results] unless params[:num_results].present?
+      params[:all_words] = cookies[:s_all_words] unless params[:all_words].present?
+      params[:titles_only] = cookies[:s_titles_only] unless params[:titles_only].present?
+      @object_types.each do |t|
+        params[t] = '1' if params[t].blank? && cookies["s_#{t}".to_sym].present?
+      end
     end
 
     @question = params[:q] || ""
@@ -60,17 +85,6 @@ class SearchController < ApplicationController
       return
     end
     
-    cookies[:s_scope] = params[:scope]
-    cookies[:s_all_words] = params[:all_words]
-    cookies[:s_titles_only] = params[:titles_only]
-    cookies[:s_num_results] = params[:num_results]
-    @object_types.each do |t| 
-      if orig_params[t].present?
-        cookies["s_#{t}".to_sym] = orig_params[t]
-      else
-        cookies.delete("s_#{t}".to_sym)
-      end
-    end
     
     if projects_to_search.is_a? Project
       # don't search projects
