@@ -23,16 +23,15 @@ class SearchController < ApplicationController
 
   def index
     @object_types = Redmine::Search.available_search_types.dup
-    orig_parms = params.clone
+    orig_params = params.clone
     
 
-    params[:q] = session[:s_q] unless params[:q].present?
-    params[:scope] = session[:s_scope] unless params[:scope].present?
-    params[:all_words] = session[:s_all_words] unless params[:all_words].present?
-    params[:titles_only] = session[:s_titles_only] unless params[:titles_only].present?
-    params[:num_results] = session[:s_num_results] unless params[:num_results].present?
+    params[:scope] = cookies[:s_scope] unless params[:scope].present?
+    params[:all_words] = cookies[:s_all_words] unless params[:all_words].present?
+    params[:titles_only] = cookies[:s_titles_only] unless params[:titles_only].present?
+    params[:num_results] = cookies[:s_num_results] unless params[:num_results].present?
     @object_types.each do |t|
-      params[t] = session["s_#{t}".to_sym] if params[t].blank? && session["s_#{t}".to_sym].present?
+      params[t] = cookies["s_#{t}".to_sym] if params[t].blank? && cookies["s_#{t}".to_sym].present?
     end
 
     @question = params[:q] || ""
@@ -61,16 +60,15 @@ class SearchController < ApplicationController
       return
     end
     
-    session[:s_q] = orig_parms[:q]
-    session[:s_scope] = orig_parms[:scope]
-    session[:s_all_words] = orig_parms[:all_words]
-    session[:s_titles_only] = orig_parms[:titles_only]
-    session[:s_num_results] = orig_parms[:num_results]
+    cookies[:s_scope] = params[:scope]
+    cookies[:s_all_words] = params[:all_words]
+    cookies[:s_titles_only] = params[:titles_only]
+    cookies[:s_num_results] = params[:num_results]
     @object_types.each do |t| 
-      if orig_parms[t].present?
-        session["s_#{t}".to_sym] = orig_parms[t]
+      if orig_params[t].present?
+        cookies["s_#{t}".to_sym] = orig_params[t]
       else
-        session.delete("s_#{t}".to_sym)
+        cookies.delete("s_#{t}".to_sym)
       end
     end
     
@@ -110,7 +108,7 @@ class SearchController < ApplicationController
       end
       #if we're doing "all results" it's > 100, so group by project
       if limit > 100
-        @results = @results.sort {|a,b| (a.is_a?(Project) || b.is_a?(Project))? b.event_datetime <=> a.event_datetime : (a.project_id != b.project_id ? a.project.name <=> b.project.name : b.event_datetime <=> a.event_datetime)}
+        @results = @results.sort {|a,b| (a.is_a?(Project) || b.is_a?(Project) || a.is_a?(Changeset) || b.is_a?(Changeset))? b.event_datetime <=> a.event_datetime : (a.project_id != b.project_id ? a.project.name <=> b.project.name : b.event_datetime <=> a.event_datetime)}
       else
         @results = @results.sort {|a,b| b.event_datetime <=> a.event_datetime}
       end

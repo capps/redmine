@@ -28,6 +28,14 @@ module AttachmentsHelper
     end
   end
   
+  def inline_attachments(container, options = {})
+    options.assert_valid_keys(:author)
+    
+    if container.attachments.any?
+      render :partial => 'attachments/inline', :locals => {:attachments => container.attachments, :options => options}
+    end
+  end
+  
   def to_utf8(str)
     if str.respond_to?(:force_encoding)
       str.force_encoding('UTF-8')

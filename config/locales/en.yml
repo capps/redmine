@@ -271,6 +271,7 @@ en:
   field_done_ratio: % Done
   field_auth_source: Authentication mode
   field_hide_mail: Hide my email address
+  field_inline_images: Display attached images inline
   field_comments: Comment
   field_url: URL
   field_start_page: Start page

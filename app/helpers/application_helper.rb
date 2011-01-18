@@ -98,6 +98,20 @@ module ApplicationHelper
 
     link_to(h(text), {:controller => 'attachments', :action => action, :id => attachment, :filename => attachment.filename }, options)
   end
+  
+  # Generates a link to an attachment.
+  # Options:
+  # * :text - Link text (default to attachment filename)
+  # * :download - Force download (default: false)
+  def image_link_to_attachment(attachment, options={})
+    text = options.delete(:text) || attachment.filename
+    action = options.delete(:download) ? 'download' : 'show'
+
+    #route = {:controller => 'attachments', :action => action, :id => attachment, :filename => attachment.filename }
+    #link_to("<img src='#{url_for(route)}'>", route, options)
+    route = url_for({:controller => 'attachments', :action => action, :id => attachment, :filename => attachment.filename })
+    "<a href='#{route}'><img src='http://eng.paynearme.com#{route}' width=300></a>"
+  end
 
   # Generates a link to a SCM revision
   # Options:
