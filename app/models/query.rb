@@ -220,7 +220,7 @@ class Query < ActiveRecord::Base
         @available_filters["category_id"] = { :type => :list_optional, :order => 6, :values => @project.issue_categories.collect{|s| [s.name, s.id.to_s] } }
       end
       unless @project.shared_versions.empty?
-        @available_filters["fixed_version_id"] = { :type => :list_optional, :order => 7, :values => @project.shared_versions.sort.collect{|s| ["#{s.project.name} - #{s.name}", s.id.to_s] } }
+        @available_filters["fixed_version_id"] = { :type => :list_optional, :order => 7, :values => @project.shared_versions.sort.reverse.collect{|s| ["#{s.project.name} - #{s.name}", s.id.to_s] } }
       end
       unless @project.descendants.active.empty?
         @available_filters["subproject_id"] = { :type => :list_subprojects, :order => 13, :values => @project.descendants.visible.collect{|s| [s.name, s.id.to_s] } }
@@ -230,7 +230,7 @@ class Query < ActiveRecord::Base
       # global filters for cross project issue list
       system_shared_versions = Version.visible.find_all_by_sharing('system')
       unless system_shared_versions.empty?
-        @available_filters["fixed_version_id"] = { :type => :list_optional, :order => 7, :values => system_shared_versions.sort.collect{|s| ["#{s.project.name} - #{s.name}", s.id.to_s] } }
+        @available_filters["fixed_version_id"] = { :type => :list_optional, :order => 7, :values => system_shared_versions.sort.reverse.collect{|s| ["#{s.project.name} - #{s.name}", s.id.to_s] } }
       end
       add_custom_fields_filters(IssueCustomField.find(:all, :conditions => {:is_filter => true, :is_for_all => true}))
     end
