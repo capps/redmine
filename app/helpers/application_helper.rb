@@ -110,7 +110,7 @@ module ApplicationHelper
     #route = {:controller => 'attachments', :action => action, :id => attachment, :filename => attachment.filename }
     #link_to("<img src='#{url_for(route)}'>", route, options)
     route = url_for({:controller => 'attachments', :action => action, :id => attachment, :filename => attachment.filename })
-    "<a href='#{route}'><img src='http://eng.paynearme.com#{route}' width=300></a>"
+    "<a href='#{route}'><img src='#{route}' width=300></a>"
   end
 
   # Generates a link to a SCM revision
