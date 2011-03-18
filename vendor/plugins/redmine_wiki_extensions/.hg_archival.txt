@@ -1,0 +1,5 @@
+repo: dfbc998b9c1a13112ebc39421b454fddf151e6cd
+node: 29567f419215460f9db8e2f1f3c854fa9c1a4bc1
+branch: default
+latesttag: redmine_wiki_extensions-0.3.1
+latesttagdistance: 6
