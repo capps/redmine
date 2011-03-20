@@ -421,9 +421,9 @@ module ApplicationHelper
       title += @html_title if @html_title
       title << Setting.app_title
       title.select {|t| !t.blank? }.join(' - ')
-      title.each {|t| t.sub!(/([a-zA-Z]+ )(#\d{1,6}:)(.?)/, '\2 \3') }
-      # ([a-zA-Z]+ )#\d{1,6}:  -- this pattern should match Bug | Feature etc followed by a 1 to 6 digit
-      # issue
+      title.each {|t| t.sub!(/([a-zA-Z]+ )#(\d{1,6}:)(.*)/, '\2 \3') }
+      # this pattern should match Bug | Feature etc followed by a 1 to 6 digit
+      # issue, followed by a description; we capture the number and desc
     else
       @html_title ||= []
       @html_title += args
