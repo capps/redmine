@@ -48,7 +48,7 @@ Rails::Initializer.run do |config|
   # Deliveries are disabled by default. Do NOT modify this section.
   # Define your email configuration in email.yml instead.
   # It will automatically turn deliveries on
-  config.action_mailer.perform_deliveries = false
+  config.action_mailer.perform_deliveries = true
 
   config.gem 'rubytree', :lib => 'tree'
   

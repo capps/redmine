@@ -7,6 +7,8 @@
 /db/*.sqlite3
 /db/schema.rb
 /files/*
+/files
+files
 /log/*.log*
 /log/mongrel_debug
 /public/dispatch.*
