@@ -42,7 +42,7 @@ class Changeset < ActiveRecord::Base
   validates_uniqueness_of :scmid, :scope => :repository_id, :allow_nil => true
   
   named_scope :visible, lambda {|*args| { :include => {:repository => :project},
-                                          :conditions => Project.allowed_to_condition(args.first || User.current, :view_changesets) } }
+                                          :conditions => Project.allowed_to_condition(args.shift || User.current, :view_changesets, *args) } }
                                           
   def revision=(r)
     write_attribute :revision, (r.nil? ? nil : r.to_s)
@@ -55,10 +55,6 @@ class Changeset < ActiveRecord::Base
     else
       revision.to_s
     end
-  end
-  
-  def comments=(comment)
-    write_attribute(:comments, Changeset.normalize_comments(comment))
   end
 
   def committed_on=(date)
@@ -75,33 +71,34 @@ class Changeset < ActiveRecord::Base
     end
   end
   
-  def committer=(arg)
-    write_attribute(:committer, self.class.to_utf8(arg.to_s))
-  end
-
   def project
     repository.project
   end
-  
+
   def author
     user || committer.to_s.split('<').first
   end
-  
+
   def before_create
-    self.user = repository.find_committer_user(committer)
+    self.committer = self.class.to_utf8(self.committer, repository.repo_log_encoding)
+    self.comments  = self.class.normalize_comments(
+                       self.comments, repository.repo_log_encoding)
+    self.user = repository.find_committer_user(self.committer)
   end
-  
+
   def after_create
     scan_comment_for_issue_ids
   end
-  
+
   TIMELOG_RE = /
     (
-    (\d+([.,]\d+)?)h?
+    ((\d+)(h|hours?))((\d+)(m|min)?)?
+    |
+    ((\d+)(h|hours?|m|min))
     |
     (\d+):(\d+)
     |
-    ((\d+)(h|hours?))?((\d+)(m|min)?)?
+    (\d+([\.,]\d+)?)h?
     )
     /x
   
@@ -150,31 +147,32 @@ class Changeset < ActiveRecord::Base
       "r#{revision}"
     end
   end
-  
+
   # Returns the previous changeset
   def previous
-    @previous ||= Changeset.find(:first, :conditions => ['id < ? AND repository_id = ?', self.id, self.repository_id], :order => 'id DESC')
+    @previous ||= Changeset.find(:first,
+                    :conditions => ['id < ? AND repository_id = ?',
+                                    self.id, self.repository_id],
+                    :order => 'id DESC')
   end
 
   # Returns the next changeset
   def next
-    @next ||= Changeset.find(:first, :conditions => ['id > ? AND repository_id = ?', self.id, self.repository_id], :order => 'id ASC')
-  end
-  
-  # Strips and reencodes a commit log before insertion into the database
-  def self.normalize_comments(str)
-    to_utf8(str.to_s.strip)
+    @next ||= Changeset.find(:first,
+                    :conditions => ['id > ? AND repository_id = ?',
+                                    self.id, self.repository_id],
+                    :order => 'id ASC')
   end
 
   # Creates a new Change from it's common parameters
   def create_change(change)
-    Change.create(:changeset => self,
-                  :action => change[:action],
-                  :path => change[:path],
-                  :from_path => change[:from_path],
+    Change.create(:changeset     => self,
+                  :action        => change[:action],
+                  :path          => change[:path],
+                  :from_path     => change[:from_path],
                   :from_revision => change[:from_revision])
   end
-  
+
   private
 
   # Finds an issue that can be referenced by the commit message
@@ -183,7 +181,9 @@ class Changeset < ActiveRecord::Base
     return nil if id.blank?
     issue = Issue.find_by_id(id.to_i, :include => :project)
     if issue
-      unless project == issue.project || project.is_ancestor_of?(issue.project) || project.is_descendant_of?(issue.project)
+      unless issue.project &&
+                (project == issue.project || project.is_ancestor_of?(issue.project) ||
+                 project.is_descendant_of?(issue.project))
         issue = nil
       end
     end
@@ -214,14 +214,15 @@ class Changeset < ActiveRecord::Base
     end
     issue
   end
-  
+
   def log_time(issue, hours)
     time_entry = TimeEntry.new(
       :user => user,
       :hours => hours,
       :issue => issue,
       :spent_on => commit_date,
-      :comments => l(:text_time_logged_by_changeset, :value => text_tag, :locale => Setting.default_language)
+      :comments => l(:text_time_logged_by_changeset, :value => text_tag,
+                     :locale => Setting.default_language)
       )
     time_entry.activity = log_time_activity unless log_time_activity.nil?
     
@@ -230,13 +231,13 @@ class Changeset < ActiveRecord::Base
     end
     time_entry
   end
-  
+
   def log_time_activity
     if Setting.commit_logtime_activity_id.to_i > 0
       TimeEntryActivity.find_by_id(Setting.commit_logtime_activity_id.to_i)
     end
   end
-  
+
   def split_comments
     comments =~ /\A(.+?)\r?\n(.*)$/m
     @short_comments = $1 || comments
@@ -244,28 +245,47 @@ class Changeset < ActiveRecord::Base
     return @short_comments, @long_comments
   end
 
-  def self.to_utf8(str)
-    if str.respond_to?(:force_encoding)
-      str.force_encoding('UTF-8')
-      return str if str.valid_encoding?
-    else
-      return str if /\A[\r\n\t\x20-\x7e]*\Z/n.match(str) # for us-ascii
-    end
+  public
 
-    encoding = Setting.commit_logs_encoding.to_s.strip
-    unless encoding.blank? || encoding == 'UTF-8'
-      begin
-        str = Iconv.conv('UTF-8', encoding, str)
-      rescue Iconv::Failure
-        # do nothing here
+  # Strips and reencodes a commit log before insertion into the database
+  def self.normalize_comments(str, encoding)
+    Changeset.to_utf8(str.to_s.strip, encoding)
+  end
+
+  def self.to_utf8(str, encoding)
+    return str if str.nil?
+    str.force_encoding("ASCII-8BIT") if str.respond_to?(:force_encoding)
+    if str.empty?
+      str.force_encoding("UTF-8") if str.respond_to?(:force_encoding)
+      return str
+    end
+    enc = encoding.blank? ? "UTF-8" : encoding
+    if str.respond_to?(:force_encoding)
+      if enc.upcase != "UTF-8"
+        str.force_encoding(enc)
+        str = str.encode("UTF-8", :invalid => :replace,
+              :undef => :replace, :replace => '?')
+      else
+        str.force_encoding("UTF-8")
+        if ! str.valid_encoding?
+          str = str.encode("US-ASCII", :invalid => :replace,
+                :undef => :replace, :replace => '?').encode("UTF-8")
+        end
       end
+    else
+      ic = Iconv.new('UTF-8', enc)
+      txtar = ""
+      begin
+        txtar += ic.iconv(str)
+      rescue Iconv::IllegalSequence
+        txtar += $!.success
+        str = '?' + $!.failed[1,$!.failed.length]
+        retry
+      rescue
+        txtar += $!.success
+      end
+      str = txtar
     end
-    # removes invalid UTF8 sequences
-    begin
-      Iconv.conv('UTF-8//IGNORE', 'UTF-8', str + '  ')[0..-3]
-    rescue Iconv::InvalidEncoding
-      # "UTF-8//IGNORE" is not supported on some OS
-      str
-    end
+    str
   end
 end

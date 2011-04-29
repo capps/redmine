@@ -24,14 +24,26 @@ class Repository::Filesystem < Repository
   attr_protected :root_url
   validates_presence_of :url
 
-  def scm_adapter
+  def self.human_attribute_name(attribute_key_name)
+    attr_name = attribute_key_name
+    if attr_name == "url"
+      attr_name = "root_directory"
+    end
+    super(attr_name)
+  end
+
+  def self.scm_adapter_class
     Redmine::Scm::Adapters::FilesystemAdapter
   end
-  
+
   def self.scm_name
     'Filesystem'
   end
-  
+
+  def supports_all_revisions?
+    false
+  end
+
   def entries(path=nil, identifier=nil)
     scm.entries(path, identifier)
   end

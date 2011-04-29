@@ -1,5 +1,5 @@
-# redMine - project management software
-# Copyright (C) 2006-2007  Jean-Philippe Lang
+# Redmine - project management software
+# Copyright (C) 2006-2011  Jean-Philippe Lang
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -34,7 +34,7 @@ class Issue < ActiveRecord::Base
   has_many :relations_from, :class_name => 'IssueRelation', :foreign_key => 'issue_from_id', :dependent => :delete_all
   has_many :relations_to, :class_name => 'IssueRelation', :foreign_key => 'issue_to_id', :dependent => :delete_all
   
-  acts_as_nested_set :scope => 'root_id'
+  acts_as_nested_set :scope => 'root_id', :dependent => :destroy
   acts_as_attachable :after_remove => :attachment_removed
   acts_as_customizable
   acts_as_watchable
@@ -60,7 +60,7 @@ class Issue < ActiveRecord::Base
   validates_numericality_of :estimated_hours, :allow_nil => true
 
   named_scope :visible, lambda {|*args| { :include => :project,
-                                          :conditions => Project.allowed_to_condition(args.first || User.current, :view_issues) } }
+                                          :conditions => Issue.visible_condition(args.shift || User.current, *args) } }
   
   named_scope :open, :conditions => ["#{IssueStatus.table_name}.is_closed = ?", false], :include => :status
 
@@ -68,11 +68,6 @@ class Issue < ActiveRecord::Base
   named_scope :with_limit, lambda { |limit| { :limit => limit} }
   named_scope :on_active_project, :include => [:status, :project, :tracker],
                                   :conditions => ["#{Project.table_name}.status=#{Project::STATUS_ACTIVE}"]
-  named_scope :for_gantt, lambda {
-    {
-      :include => [:tracker, :status, :assigned_to, :priority, :project, :fixed_version]
-    }
-  }
 
   named_scope :without_version, lambda {
     {
@@ -89,12 +84,38 @@ class Issue < ActiveRecord::Base
   before_create :default_assign
   before_save :close_duplicates, :update_done_ratio_from_issue_status
   after_save :reschedule_following_issues, :update_nested_set_attributes, :update_parent_attributes, :create_journal
-  after_destroy :destroy_children
   after_destroy :update_parent_attributes
   
+  # Returns a SQL conditions string used to find all issues visible by the specified user
+  def self.visible_condition(user, options={})
+    Project.allowed_to_condition(user, :view_issues, options) do |role, user|
+      case role.issues_visibility
+      when 'all'
+        nil
+      when 'default'
+        "(#{table_name}.is_private = #{connection.quoted_false} OR #{table_name}.author_id = #{user.id} OR #{table_name}.assigned_to_id = #{user.id})"
+      when 'own'
+        "(#{table_name}.author_id = #{user.id} OR #{table_name}.assigned_to_id = #{user.id})"
+      else
+        '1=0'
+      end
+    end
+  end
+
   # Returns true if usr or current user is allowed to view the issue
   def visible?(usr=nil)
-    (usr || User.current).allowed_to?(:view_issues, self.project)
+    (usr || User.current).allowed_to?(:view_issues, self.project) do |role, user|
+      case role.issues_visibility
+      when 'all'
+        true
+      when 'default'
+        !self.is_private? || self.author == user || self.assigned_to == user
+      when 'own'
+        self.author == user || self.assigned_to == user
+      else
+        false
+      end
+    end
   end
   
   def after_initialize
@@ -107,7 +128,7 @@ class Issue < ActiveRecord::Base
   
   # Overrides Redmine::Acts::Customizable::InstanceMethods#available_custom_fields
   def available_custom_fields
-    (project && tracker) ? project.all_issue_custom_fields.select {|c| tracker.custom_fields.include? c } : []
+    (project && tracker) ? (project.all_issue_custom_fields & tracker.custom_fields.all) : []
   end
   
   def copy_from(arg)
@@ -154,6 +175,7 @@ class Issue < ActiveRecord::Base
       issue.reset_custom_values!
     end
     if options[:copy]
+      issue.author = User.current
       issue.custom_field_values = self.custom_field_values.inject({}) {|h,v| h[v.custom_field_id] = v.value; h}
       issue.status = if options[:attributes] && options[:attributes][:status_id]
                        IssueStatus.find_by_id(options[:attributes][:status_id])
@@ -166,7 +188,13 @@ class Issue < ActiveRecord::Base
       issue.attributes = options[:attributes]
     end
     if issue.save
-      unless options[:copy]
+      if options[:copy]
+        if current_journal && current_journal.notes.present?
+          issue.init_journal(current_journal.user, current_journal.notes)
+          issue.current_journal.notify = false
+          issue.save
+        end
+      else
         # Manually update project_id on related time entries
         TimeEntry.update_all("project_id = #{new_project.id}", {:issue_id => id})
         
@@ -240,6 +268,12 @@ class Issue < ActiveRecord::Base
     'done_ratio',
     :if => lambda {|issue, user| issue.new_statuses_allowed_to(user).any? }
 
+  safe_attributes 'is_private',
+    :if => lambda {|issue, user|
+      user.allowed_to?(:set_issues_private, issue.project) ||
+        (issue.author == user && user.allowed_to?(:set_own_issues_private, issue.project))
+    }
+  
   # Safely sets attributes
   # Should be called from controllers instead of #attributes=
   # attr_accessible is too rough because we still want things like
@@ -423,7 +457,12 @@ class Issue < ActiveRecord::Base
   
   # Returns an array of status that user is able to apply
   def new_statuses_allowed_to(user, include_default=false)
-    statuses = status.find_new_statuses_allowed_to(user.roles_for_project(project), tracker)
+    statuses = status.find_new_statuses_allowed_to(
+      user.roles_for_project(project),
+      tracker,
+      author == user,
+      assigned_to_id_changed? ? assigned_to_id_was == user.id : assigned_to_id == user.id
+      )
     statuses << status unless statuses.empty?
     statuses << IssueStatus.default if include_default
     statuses = statuses.uniq.sort
@@ -456,11 +495,11 @@ class Issue < ActiveRecord::Base
     (relations_from + relations_to).sort
   end
   
-  def all_dependent_issues(except=nil)
-    except ||= self
+  def all_dependent_issues(except=[])
+    except << self
     dependencies = []
     relations_from.each do |relation|
-      if relation.issue_to && relation.issue_to != except
+      if relation.issue_to && !except.include?(relation.issue_to) 
         dependencies << relation.issue_to
         dependencies += relation.issue_to.all_dependent_issues(except)
       end
@@ -528,6 +567,9 @@ class Issue < ActiveRecord::Base
     s = "issue status-#{status.position} priority-#{priority.position}"
     s << ' closed' if closed?
     s << ' overdue' if overdue?
+    s << ' child' if child?
+    s << ' parent' unless leaf?
+    s << ' private' if is_private?
     s << ' created-by-me' if User.current.logged? && author_id == User.current.id
     s << ' assigned-to-me' if User.current.logged? && assigned_to_id == User.current.id
     s
@@ -537,7 +579,7 @@ class Issue < ActiveRecord::Base
   # Returns false if save fails
   def save_issue_with_child_records(params, existing_time_entry=nil)
     Issue.transaction do
-      if params[:time_entry] && params[:time_entry][:hours].present? && User.current.allowed_to?(:log_time, project)
+      if params[:time_entry] && (params[:time_entry][:hours].present? || params[:time_entry][:comments].present?) && User.current.allowed_to?(:log_time, project)
         @time_entry = existing_time_entry || TimeEntry.new
         @time_entry.project = project
         @time_entry.issue = self
@@ -641,14 +683,16 @@ class Issue < ActiveRecord::Base
   def self.by_subproject(project)
     ActiveRecord::Base.connection.select_all("select    s.id as status_id, 
                                                 s.is_closed as closed, 
-                                                i.project_id as project_id,
-                                                count(i.id) as total 
+                                                #{Issue.table_name}.project_id as project_id,
+                                                count(#{Issue.table_name}.id) as total 
                                               from 
-                                                #{Issue.table_name} i, #{IssueStatus.table_name} s
+                                                #{Issue.table_name}, #{Project.table_name}, #{IssueStatus.table_name} s
                                               where 
-                                                i.status_id=s.id 
-                                                and i.project_id IN (#{project.descendants.active.collect{|p| p.id}.join(',')})
-                                              group by s.id, s.is_closed, i.project_id") if project.descendants.active.any?
+                                                #{Issue.table_name}.status_id=s.id
+                                                and #{Issue.table_name}.project_id = #{Project.table_name}.id
+                                                and #{visible_condition(User.current, :project => project, :with_subprojects => true)}
+                                                and #{Issue.table_name}.project_id <> #{project.id}
+                                              group by s.id, s.is_closed, #{Issue.table_name}.project_id") if project.descendants.active.any?
   end
   # End ReportsController extraction
   
@@ -758,14 +802,6 @@ class Issue < ActiveRecord::Base
     end
   end
   
-  def destroy_children
-    unless leaf?
-      children.each do |child|
-        child.destroy
-      end
-    end
-  end
-  
   # Update issues so their versions are not pointing to a
   # fixed_version that is not shared with the issue's project
   def self.update_versions(conditions=nil)
@@ -833,7 +869,7 @@ class Issue < ActiveRecord::Base
   def create_journal
     if @current_journal
       # attributes changes
-      (Issue.column_names - %w(id description root_id lft rgt lock_version created_on updated_on)).each {|c|
+      (Issue.column_names - %w(id root_id lft rgt lock_version created_on updated_on)).each {|c|
         @current_journal.details << JournalDetail.new(:property => 'attr',
                                                       :prop_key => c,
                                                       :old_value => @issue_before_change.send(c),
@@ -866,20 +902,19 @@ class Issue < ActiveRecord::Base
     select_field = options.delete(:field)
     joins = options.delete(:joins)
 
-    where = "i.#{select_field}=j.id"
+    where = "#{Issue.table_name}.#{select_field}=j.id"
     
     ActiveRecord::Base.connection.select_all("select    s.id as status_id, 
                                                 s.is_closed as closed, 
                                                 j.id as #{select_field},
-                                                count(i.id) as total 
+                                                count(#{Issue.table_name}.id) as total 
                                               from 
-                                                  #{Issue.table_name} i, #{IssueStatus.table_name} s, #{joins} j
+                                                  #{Issue.table_name}, #{Project.table_name}, #{IssueStatus.table_name} s, #{joins} j
                                               where 
-                                                i.status_id=s.id 
+                                                #{Issue.table_name}.status_id=s.id 
                                                 and #{where}
-                                                and i.project_id=#{project.id}
+                                                and #{Issue.table_name}.project_id=#{Project.table_name}.id
+                                                and #{visible_condition(User.current, :project => project)}
                                               group by s.id, s.is_closed, j.id")
   end
-  
-
 end

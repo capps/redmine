@@ -29,6 +29,9 @@ class Document < ActiveRecord::Base
   validates_presence_of :project, :title, :category
   validates_length_of :title, :maximum => 60
   
+  named_scope :visible, lambda {|*args| { :include => :project,
+                                          :conditions => Project.allowed_to_condition(args.shift || User.current, :view_documents, *args) } }
+  
   def visible?(user=User.current)
     !user.nil? && user.allowed_to?(:view_documents, project)
   end

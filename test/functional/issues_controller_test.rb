@@ -1,5 +1,5 @@
 # Redmine - project management software
-# Copyright (C) 2006-2008  Jean-Philippe Lang
+# Copyright (C) 2006-2011  Jean-Philippe Lang
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -91,6 +91,13 @@ class IssuesControllerTest < ActionController::TestCase
     assert_no_tag :tag => 'a', :content => /Can't print recipes/
     assert_tag :tag => 'a', :content => /Subproject issue/
   end
+
+  def test_index_should_list_visible_issues_only
+    get :index, :per_page => 100
+    assert_response :success
+    assert_not_nil assigns(:issues)
+    assert_nil assigns(:issues).detect {|issue| !issue.visible?}
+  end
   
   def test_index_with_project
     Setting.display_subprojects_issues = 0
@@ -139,9 +146,9 @@ class IssuesControllerTest < ActionController::TestCase
   
   def test_index_with_project_and_filter
     get :index, :project_id => 1, :set_filter => 1, 
-      :fields => ['tracker_id'],
-      :operators => {'tracker_id' => '='},
-      :values => {'tracker_id' => ['1']} 
+      :f => ['tracker_id'],
+      :op => {'tracker_id' => '='},
+      :v => {'tracker_id' => ['1']} 
     assert_response :success
     assert_template 'index.rhtml'
     assert_not_nil assigns(:issues)
@@ -248,7 +255,7 @@ class IssuesControllerTest < ActionController::TestCase
   
   def test_index_with_columns
     columns = ['tracker', 'subject', 'assigned_to']
-    get :index, :set_filter => 1, :query => { 'column_names' => columns}
+    get :index, :set_filter => 1, :c => columns
     assert_response :success
     
     # query should use specified columns
@@ -260,6 +267,21 @@ class IssuesControllerTest < ActionController::TestCase
     assert_kind_of Hash, session[:query]
     assert_kind_of Array, session[:query][:column_names]
     assert_equal columns, session[:query][:column_names].map(&:to_s)
+  end
+  
+  def test_index_with_custom_field_column
+    columns = %w(tracker subject cf_2)
+    get :index, :set_filter => 1, :c => columns
+    assert_response :success
+    
+    # query should use specified columns
+    query = assigns(:query)
+    assert_kind_of Query, query
+    assert_equal columns, query.column_names.map(&:to_s)
+    
+    assert_tag :td,
+      :attributes => {:class => 'cf_2 string'},
+      :ancestor => {:tag => 'table', :attributes => {:class => /issues/}}
   end
 
   def test_show_by_anonymous
@@ -302,8 +324,21 @@ class IssuesControllerTest < ActionController::TestCase
     assert_response :redirect
   end
   
+  def test_show_should_deny_anonymous_access_to_private_issue
+    Issue.update_all(["is_private = ?", true], "id = 1")
+    get :show, :id => 1
+    assert_response :redirect
+  end
+  
   def test_show_should_deny_non_member_access_without_permission
     Role.non_member.remove_permission!(:view_issues)
+    @request.session[:user_id] = 9
+    get :show, :id => 1
+    assert_response 403
+  end
+  
+  def test_show_should_deny_non_member_access_to_private_issue
+    Issue.update_all(["is_private = ?", true], "id = 1")
     @request.session[:user_id] = 9
     get :show, :id => 1
     assert_response 403
@@ -314,6 +349,35 @@ class IssuesControllerTest < ActionController::TestCase
     @request.session[:user_id] = 2
     get :show, :id => 1
     assert_response 403
+  end
+  
+  def test_show_should_deny_member_access_to_private_issue_without_permission
+    Issue.update_all(["is_private = ?", true], "id = 1")
+    @request.session[:user_id] = 3
+    get :show, :id => 1
+    assert_response 403
+  end
+  
+  def test_show_should_allow_author_access_to_private_issue
+    Issue.update_all(["is_private = ?, author_id = 3", true], "id = 1")
+    @request.session[:user_id] = 3
+    get :show, :id => 1
+    assert_response :success
+  end
+  
+  def test_show_should_allow_assignee_access_to_private_issue
+    Issue.update_all(["is_private = ?, assigned_to_id = 3", true], "id = 1")
+    @request.session[:user_id] = 3
+    get :show, :id => 1
+    assert_response :success
+  end
+  
+  def test_show_should_allow_member_access_to_private_issue_with_permission
+    Issue.update_all(["is_private = ?", true], "id = 1")
+    User.find(3).roles_for_project(Project.find(1)).first.update_attribute :issues_visibility, 'all'
+    @request.session[:user_id] = 3
+    get :show, :id => 1
+    assert_response :success
   end
   
   def test_show_should_not_disclose_relations_to_invisible_issues
@@ -609,17 +673,6 @@ class IssuesControllerTest < ActionController::TestCase
           :attributes => {:name => 'issue[status_id]'},
           :children => {:count => 1},
           :child => {:tag => 'option', :attributes => {:value => IssueStatus.default.id.to_s}}
-      end
-      
-      should "accept default status" do
-        assert_difference 'Issue.count' do
-          post :create, :project_id => 1, 
-                     :issue => {:tracker_id => 1,
-                                :subject => 'This is an issue',
-                                :status_id => 1}
-        end
-        issue = Issue.last(:order => 'id')
-        assert_equal IssueStatus.default, issue.status
       end
       
       should "accept default status" do
@@ -1002,7 +1055,7 @@ class IssuesControllerTest < ActionController::TestCase
     assert_equal 1, ActionMailer::Base.deliveries.size
   end
   
-  def test_put_update_with_invalid_spent_time
+  def test_put_update_with_invalid_spent_time_hours_only
     @request.session[:user_id] = 2
     notes = 'Note added by IssuesControllerTest#test_post_edit_with_invalid_spent_time'
     
@@ -1015,9 +1068,28 @@ class IssuesControllerTest < ActionController::TestCase
     assert_response :success
     assert_template 'edit'
     
-    assert_tag :textarea, :attributes => { :name => 'notes' },
-                          :content => notes
+    assert_error_tag :descendant => {:content => /Activity can't be blank/}
+    assert_tag :textarea, :attributes => { :name => 'notes' }, :content => notes
     assert_tag :input, :attributes => { :name => 'time_entry[hours]', :value => "2z" }
+  end
+  
+  def test_put_update_with_invalid_spent_time_comments_only
+    @request.session[:user_id] = 2
+    notes = 'Note added by IssuesControllerTest#test_post_edit_with_invalid_spent_time'
+    
+    assert_no_difference('Journal.count') do
+      put :update,
+           :id => 1,
+           :notes => notes,
+           :time_entry => {"comments"=>"this is my comment", "activity_id"=>"", "hours"=>""}
+    end
+    assert_response :success
+    assert_template 'edit'
+    
+    assert_error_tag :descendant => {:content => /Activity can't be blank/}
+    assert_error_tag :descendant => {:content => /Hours can't be blank/}
+    assert_tag :textarea, :attributes => { :name => 'notes' }, :content => notes
+    assert_tag :input, :attributes => { :name => 'time_entry[comments]', :value => "this is my comment" }
   end
   
   def test_put_update_should_allow_fixed_version_to_be_set_to_a_subproject
@@ -1072,6 +1144,8 @@ class IssuesControllerTest < ActionController::TestCase
     assert_response :success
     assert_template 'bulk_edit'
     
+    assert_tag :input, :attributes => {:name => 'issue[parent_issue_id]'}
+    
     # Project specific custom field, date type
     field = CustomField.find(9)
     assert !field.is_for_all?
@@ -1089,11 +1163,46 @@ class IssuesControllerTest < ActionController::TestCase
     assert_response :success
     assert_template 'bulk_edit'
     
+    # Can not set issues from different projects as children of an issue
+    assert_no_tag :input, :attributes => {:name => 'issue[parent_issue_id]'}
+    
     # Project specific custom field, date type
     field = CustomField.find(9)
     assert !field.is_for_all?
     assert !field.project_ids.include?(Issue.find(6).project_id)
     assert_no_tag :input, :attributes => {:name => 'issue[custom_field_values][9]'}
+  end
+  
+  def test_get_bulk_edit_with_user_custom_field
+    field = IssueCustomField.create!(:name => 'Tester', :field_format => 'user', :is_for_all => true)
+    
+    @request.session[:user_id] = 2
+    get :bulk_edit, :ids => [1, 2]
+    assert_response :success
+    assert_template 'bulk_edit'
+    
+    assert_tag :select,
+      :attributes => {:name => "issue[custom_field_values][#{field.id}]"},
+      :children => {
+        :only => {:tag => 'option'},
+        :count => Project.find(1).users.count + 1
+      }
+  end
+  
+  def test_get_bulk_edit_with_version_custom_field
+    field = IssueCustomField.create!(:name => 'Affected version', :field_format => 'version', :is_for_all => true)
+    
+    @request.session[:user_id] = 2
+    get :bulk_edit, :ids => [1, 2]
+    assert_response :success
+    assert_template 'bulk_edit'
+    
+    assert_tag :select,
+      :attributes => {:name => "issue[custom_field_values][#{field.id}]"},
+      :children => {
+        :only => {:tag => 'option'},
+        :count => Project.find(1).versions.count + 1
+      }
   end
 
   def test_bulk_update
@@ -1177,6 +1286,19 @@ class IssuesControllerTest < ActionController::TestCase
     assert_response 302
     issue = Issue.find(1)
     assert issue.closed?
+  end
+  
+  def test_bulk_update_parent_id
+    @request.session[:user_id] = 2
+    post :bulk_update, :ids => [1, 3],
+      :notes => 'Bulk editing parent',
+      :issue => {:priority_id => '', :assigned_to_id => '', :status_id => '', :parent_issue_id => '2'}
+    
+    assert_response 302
+    parent = Issue.find(2)
+    assert_equal parent.id, Issue.find(1).parent_id
+    assert_equal parent.id, Issue.find(3).parent_id
+    assert_equal [1, 3], parent.children.collect(&:id).sort
   end
 
   def test_bulk_update_custom_field
@@ -1284,6 +1406,18 @@ class IssuesControllerTest < ActionController::TestCase
     post :destroy, :ids => [1, 2, 6], :todo => 'destroy'
     assert_redirected_to :controller => 'issues', :action => 'index'
     assert !(Issue.find_by_id(1) || Issue.find_by_id(2) || Issue.find_by_id(6))
+  end
+  
+  def test_destroy_parent_and_child_issues
+    parent = Issue.generate!(:project_id => 1, :tracker_id => 1)
+    child = Issue.generate!(:project_id => 1, :tracker_id => 1, :parent_issue_id => parent.id)
+    assert child.is_descendant_of?(parent.reload)
+    
+    @request.session[:user_id] = 2
+    assert_difference 'Issue.count', -2 do
+      post :destroy, :ids => [parent.id, child.id], :todo => 'destroy'
+    end
+    assert_response 302
   end
   
   def test_default_search_scope

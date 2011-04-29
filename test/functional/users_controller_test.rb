@@ -1,5 +1,5 @@
-# redMine - project management software
-# Copyright (C) 2006-2007  Jean-Philippe Lang
+# Redmine - project management software
+# Copyright (C) 2006-2011  Jean-Philippe Lang
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -24,7 +24,7 @@ class UsersController; def rescue_action(e) raise e end; end
 class UsersControllerTest < ActionController::TestCase
   include Redmine::I18n
   
-  fixtures :users, :projects, :members, :member_roles, :roles, :auth_sources, :custom_fields, :custom_values
+  fixtures :users, :projects, :members, :member_roles, :roles, :auth_sources, :custom_fields, :custom_values, :groups_users
   
   def setup
     @controller = UsersController.new
@@ -57,6 +57,15 @@ class UsersControllerTest < ActionController::TestCase
     assert_not_nil users
     assert_equal 1, users.size
     assert_equal 'John', users.first.firstname
+  end
+  
+  def test_index_with_group_filter
+    get :index, :group_id => '10'
+    assert_response :success
+    assert_template 'index'
+    users = assigns(:users)
+    assert users.any?
+    assert_equal([], (users - Group.find(10).users))
   end
   
   def test_show
@@ -262,6 +271,30 @@ class UsersControllerTest < ActionController::TestCase
 
     assert_equal nil, u.reload.auth_source
     assert u.check_password?('newpass')
+  end
+  
+  def test_destroy
+    assert_difference 'User.count', -1 do
+      delete :destroy, :id => 2
+    end
+    assert_redirected_to '/users'
+    assert_nil User.find_by_id(2)
+  end
+
+  def test_destroy_should_not_accept_get_requests
+    assert_no_difference 'User.count' do
+      get :destroy, :id => 2
+    end
+    assert_response 405
+  end
+
+  def test_destroy_should_be_denied_for_non_admin_users
+    @request.session[:user_id] = 3
+    
+    assert_no_difference 'User.count' do
+      get :destroy, :id => 2
+    end
+    assert_response 403
   end
   
   def test_edit_membership

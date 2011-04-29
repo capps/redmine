@@ -24,7 +24,7 @@ class Message < ActiveRecord::Base
   
   acts_as_searchable :columns => ['subject', 'content'],
                      :include => {:board => :project},
-                     :project_key => 'project_id',
+                     :project_key => "#{Board.table_name}.project_id",
                      :date_column => "#{table_name}.created_on"
   acts_as_event :title => Proc.new {|o| "#{o.board.name}: #{o.subject}"},
                 :description => :content,
@@ -41,6 +41,9 @@ class Message < ActiveRecord::Base
   validates_length_of :subject, :maximum => 255
   
   after_create :add_author_as_watcher
+  
+  named_scope :visible, lambda {|*args| { :include => {:board => :project},
+                                          :conditions => Project.allowed_to_condition(args.shift || User.current, :view_messages, *args) } }
   
   def visible?(user=User.current)
     !user.nil? && user.allowed_to?(:view_messages, project)

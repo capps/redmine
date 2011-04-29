@@ -1,5 +1,5 @@
 # Redmine - project management software
-# Copyright (C) 2006-2008  Jean-Philippe Lang
+# Copyright (C) 2006-2011  Jean-Philippe Lang
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -106,12 +106,17 @@ class IssuesController < ApplicationController
     @journals = @issue.journals.find(:all, :include => [:user, :details], :order => "#{Journal.table_name}.created_on ASC")
     @journals.each_with_index {|j,i| j.indice = i+1}
     @journals.reverse! if User.current.wants_comments_in_reverse_order?
-    @changesets = @issue.changesets.visible.all
-    @changesets.reverse! if User.current.wants_comments_in_reverse_order?
+    
+    if User.current.allowed_to?(:view_changesets, @project)
+      @changesets = @issue.changesets.visible.all
+      @changesets.reverse! if User.current.wants_comments_in_reverse_order?
+    end
+    
+    @relations = @issue.relations.select {|r| r.other_issue(@issue) && r.other_issue(@issue).visible? }
     @allowed_statuses = @issue.new_statuses_allowed_to(User.current)
     @edit_allowed = User.current.allowed_to?(:edit_issues, @project)
     @priorities = IssuePriority.all
-    @time_entry = TimeEntry.new
+    @time_entry = TimeEntry.new(:issue => @issue, :project => @issue.project)
     respond_to do |format|
       format.html { render :template => 'issues/show.rhtml' }
       format.api
@@ -235,7 +240,13 @@ class IssuesController < ApplicationController
         return unless api_request?
       end
     end
-    @issues.each(&:destroy)
+    @issues.each do |issue|
+      begin
+        issue.reload.destroy
+      rescue ::ActiveRecord::RecordNotFound # raised by #reload if issue no longer exists
+        # nothing to do, issue was already deleted (eg. by a parent)
+      end
+    end
     respond_to do |format|
       format.html { redirect_back_or_default(:action => 'index', :project_id => @project) }
       format.api  { head :ok }
@@ -244,7 +255,13 @@ class IssuesController < ApplicationController
 
 private
   def find_issue
+    # Issue.visible.find(...) can not be used to redirect user to the login form
+    # if the issue actually exists but requires authentication
     @issue = Issue.find(params[:id], :include => [:project, :tracker, :status, :author, :priority, :category])
+    unless @issue.visible?
+      deny_access
+      return
+    end
     @project = @issue.project
   rescue ActiveRecord::RecordNotFound
     render_404
@@ -264,7 +281,7 @@ private
     @allowed_statuses = @issue.new_statuses_allowed_to(User.current)
     @priorities = IssuePriority.all
     @edit_allowed = User.current.allowed_to?(:edit_issues, @project)
-    @time_entry = TimeEntry.new
+    @time_entry = TimeEntry.new(:issue => @issue, :project => @issue.project)
     @time_entry.attributes = params[:time_entry]
     
     @notes = params[:notes] || (params[:issue].present? ? params[:issue][:notes] : nil)

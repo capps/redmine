@@ -1,5 +1,5 @@
-# redMine - project management software
-# Copyright (C) 2006-2007  Jean-Philippe Lang
+# Redmine - project management software
+# Copyright (C) 2006-2011  Jean-Philippe Lang
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -65,35 +65,79 @@ class IssueTest < ActiveSupport::TestCase
     assert_equal 'PostgreSQL', issue.custom_value_for(field).value
   end
   
+  def assert_visibility_match(user, issues)
+    assert_equal issues.collect(&:id).sort, Issue.all.select {|issue| issue.visible?(user)}.collect(&:id).sort
+  end
+
   def test_visible_scope_for_anonymous
     # Anonymous user should see issues of public projects only
     issues = Issue.visible(User.anonymous).all
     assert issues.any?
     assert_nil issues.detect {|issue| !issue.project.is_public?}
+    assert_nil issues.detect {|issue| issue.is_private?}
+    assert_visibility_match User.anonymous, issues
+  end
+  
+  def test_visible_scope_for_anonymous_with_own_issues_visibility
+    Role.anonymous.update_attribute :issues_visibility, 'own'
+    Issue.create!(:project_id => 1, :tracker_id => 1, :author_id => User.anonymous.id, :subject => 'Issue by anonymous')
+    
+    issues = Issue.visible(User.anonymous).all
+    assert issues.any?
+    assert_nil issues.detect {|issue| issue.author != User.anonymous}
+    assert_visibility_match User.anonymous, issues
+  end
+  
+  def test_visible_scope_for_anonymous_without_view_issues_permissions
     # Anonymous user should not see issues without permission
     Role.anonymous.remove_permission!(:view_issues)
     issues = Issue.visible(User.anonymous).all
     assert issues.empty?
+    assert_visibility_match User.anonymous, issues
   end
   
-  def test_visible_scope_for_user
+  def test_visible_scope_for_non_member
     user = User.find(9)
     assert user.projects.empty?
     # Non member user should see issues of public projects only
     issues = Issue.visible(user).all
     assert issues.any?
     assert_nil issues.detect {|issue| !issue.project.is_public?}
-    # Non member user should not see issues without permission
-    Role.non_member.remove_permission!(:view_issues)
-    user.reload
-    issues = Issue.visible(user).all
-    assert issues.empty?
-    # User should see issues of projects for which he has view_issues permissions only
-    Member.create!(:principal => user, :project_id => 2, :role_ids => [1])
-    user.reload
+    assert_nil issues.detect {|issue| issue.is_private?}
+    assert_visibility_match user, issues
+  end
+  
+  def test_visible_scope_for_non_member_with_own_issues_visibility
+    Role.non_member.update_attribute :issues_visibility, 'own'
+    Issue.create!(:project_id => 1, :tracker_id => 1, :author_id => 9, :subject => 'Issue by non member')
+    user = User.find(9)
+    
     issues = Issue.visible(user).all
     assert issues.any?
-    assert_nil issues.detect {|issue| issue.project_id != 2}
+    assert_nil issues.detect {|issue| issue.author != user}
+    assert_visibility_match user, issues
+  end
+  
+  def test_visible_scope_for_non_member_without_view_issues_permissions
+    # Non member user should not see issues without permission
+    Role.non_member.remove_permission!(:view_issues)
+    user = User.find(9)
+    assert user.projects.empty?
+    issues = Issue.visible(user).all
+    assert issues.empty?
+    assert_visibility_match user, issues
+  end
+  
+  def test_visible_scope_for_member
+    user = User.find(9)
+    # User should see issues of projects for which he has view_issues permissions only
+    Role.non_member.remove_permission!(:view_issues)
+    Member.create!(:principal => user, :project_id => 3, :role_ids => [2])
+    issues = Issue.visible(user).all
+    assert issues.any?
+    assert_nil issues.detect {|issue| issue.project_id != 3}
+    assert_nil issues.detect {|issue| issue.is_private?}
+    assert_visibility_match user, issues
   end
   
   def test_visible_scope_for_admin
@@ -104,6 +148,29 @@ class IssueTest < ActiveSupport::TestCase
     assert issues.any?
     # Admin should see issues on private projects that he does not belong to
     assert issues.detect {|issue| !issue.project.is_public?}
+    # Admin should see private issues of other users
+    assert issues.detect {|issue| issue.is_private? && issue.author != user}
+    assert_visibility_match user, issues
+  end
+  
+  def test_visible_scope_with_project
+    project = Project.find(1)
+    issues = Issue.visible(User.find(2), :project => project).all
+    projects = issues.collect(&:project).uniq
+    assert_equal 1, projects.size
+    assert_equal project, projects.first
+  end
+  
+  def test_visible_scope_with_project_and_subprojects
+    project = Project.find(1)
+    issues = Issue.visible(User.find(2), :project => project, :with_subprojects => true).all
+    projects = issues.collect(&:project).uniq
+    assert projects.size > 1
+    assert_equal [], projects.select {|p| !p.is_or_is_descendant_of?(project)}
+  end
+  
+  def test_visible_and_nested_set_scopes
+    assert_equal 0, Issue.find(1).descendants.visible.all.size
   end
   
   def test_errors_full_messages_should_include_custom_fields_errors
@@ -208,6 +275,33 @@ class IssueTest < ActiveSupport::TestCase
   def test_category_based_assignment
     issue = Issue.create(:project_id => 1, :tracker_id => 1, :author_id => 3, :status_id => 1, :priority => IssuePriority.all.first, :subject => 'Assignment test', :description => 'Assignment test', :category_id => 1)
     assert_equal IssueCategory.find(1).assigned_to, issue.assigned_to
+  end
+  
+  
+  
+  def test_new_statuses_allowed_to
+    Workflow.delete_all
+    
+    Workflow.create!(:role_id => 1, :tracker_id => 1, :old_status_id => 1, :new_status_id => 2, :author => false, :assignee => false)
+    Workflow.create!(:role_id => 1, :tracker_id => 1, :old_status_id => 1, :new_status_id => 3, :author => true, :assignee => false)
+    Workflow.create!(:role_id => 1, :tracker_id => 1, :old_status_id => 1, :new_status_id => 4, :author => false, :assignee => true)
+    Workflow.create!(:role_id => 1, :tracker_id => 1, :old_status_id => 1, :new_status_id => 5, :author => true, :assignee => true)
+    status = IssueStatus.find(1)
+    role = Role.find(1)
+    tracker = Tracker.find(1)
+    user = User.find(2)
+    
+    issue = Issue.generate!(:tracker => tracker, :status => status, :project_id => 1)
+    assert_equal [1, 2], issue.new_statuses_allowed_to(user).map(&:id)
+    
+    issue = Issue.generate!(:tracker => tracker, :status => status, :project_id => 1, :author => user)
+    assert_equal [1, 2, 3], issue.new_statuses_allowed_to(user).map(&:id)
+    
+    issue = Issue.generate!(:tracker => tracker, :status => status, :project_id => 1, :assigned_to => user)
+    assert_equal [1, 2, 4], issue.new_statuses_allowed_to(user).map(&:id)
+    
+    issue = Issue.generate!(:tracker => tracker, :status => status, :project_id => 1, :author => user, :assigned_to => user)
+    assert_equal [1, 2, 3, 4, 5], issue.new_statuses_allowed_to(user).map(&:id)
   end
   
   def test_copy
@@ -428,6 +522,11 @@ class IssueTest < ActiveSupport::TestCase
         @issue = Issue.find(1)
         @copy = nil
       end
+      
+      should "not create a journal" do
+        @copy = @issue.move_to_project(Project.find(3), Tracker.find(2), {:copy => true, :attributes => {:assigned_to_id => 3}})
+        assert_equal 0, @copy.reload.journals.size
+      end
 
       should "allow assigned_to changes" do
         @copy = @issue.move_to_project(Project.find(3), Tracker.find(2), {:copy => true, :attributes => {:assigned_to_id => 3}})
@@ -450,6 +549,26 @@ class IssueTest < ActiveSupport::TestCase
         @copy = @issue.move_to_project(Project.find(3), Tracker.find(2), {:copy => true, :attributes => {:due_date => date}})
 
         assert_equal date, @copy.due_date
+      end
+      
+      should "set current user as author" do
+        User.current = User.find(9)
+        @copy = @issue.move_to_project(Project.find(3), Tracker.find(2), {:copy => true, :attributes => {}})
+
+        assert_equal User.current, @copy.author
+      end
+      
+      should "keep journal notes" do
+        date = Date.today
+        notes = "Notes added when copying"
+        User.current = User.find(9)
+        @issue.init_journal(User.current, notes)
+        @copy = @issue.move_to_project(Project.find(3), Tracker.find(2), {:copy => true, :attributes => {:start_date => date}})
+
+        assert_equal 1, @copy.journals.size
+        journal = @copy.journals.first
+        assert_equal 0, journal.details.size
+        assert_equal notes, journal.notes
       end
     end
   end
@@ -594,6 +713,29 @@ class IssueTest < ActiveSupport::TestCase
     assert ActionMailer::Base.deliveries.empty?
   end
   
+  def test_journalized_description
+    IssueCustomField.delete_all
+    
+    i = Issue.first
+    old_description = i.description
+    new_description = "This is the new description"
+    
+    i.init_journal(User.find(2))
+    i.description = new_description
+    assert_difference 'Journal.count', 1 do
+      assert_difference 'JournalDetail.count', 1 do
+        i.save!
+      end
+    end
+    
+    detail = JournalDetail.first(:order => 'id DESC')
+    assert_equal i, detail.journal.journalized
+    assert_equal 'attr', detail.property
+    assert_equal 'description', detail.prop_key
+    assert_equal old_description, detail.old_value
+    assert_equal new_description, detail.value
+  end
+  
   def test_saving_twice_should_not_duplicate_journal_details
     i = Issue.find(:first)
     i.init_journal(User.find(2), 'Some notes')
@@ -635,6 +777,18 @@ class IssueTest < ActiveSupport::TestCase
     assert IssueRelation.new(:issue_from => Issue.find(3), :issue_to => Issue.find(1), :relation_type => IssueRelation::TYPE_PRECEDES).save(false)
     
     assert_equal [2, 3], Issue.find(1).all_dependent_issues.collect(&:id).sort
+  end
+
+  def test_all_dependent_issues_with_persistent_multiple_circular_dependencies
+    IssueRelation.delete_all
+    assert IssueRelation.create!(:issue_from => Issue.find(1), :issue_to => Issue.find(2), :relation_type => IssueRelation::TYPE_RELATES)
+    assert IssueRelation.create!(:issue_from => Issue.find(2), :issue_to => Issue.find(3), :relation_type => IssueRelation::TYPE_RELATES)
+    assert IssueRelation.create!(:issue_from => Issue.find(3), :issue_to => Issue.find(8), :relation_type => IssueRelation::TYPE_RELATES)
+    # Validation skipping
+    assert IssueRelation.new(:issue_from => Issue.find(8), :issue_to => Issue.find(2), :relation_type => IssueRelation::TYPE_RELATES).save(false)
+    assert IssueRelation.new(:issue_from => Issue.find(3), :issue_to => Issue.find(1), :relation_type => IssueRelation::TYPE_RELATES).save(false)
+    
+    assert_equal [2, 3, 8], Issue.find(1).all_dependent_issues.collect(&:id).sort
   end
   
   context "#done_ratio" do
@@ -710,45 +864,53 @@ class IssueTest < ActiveSupport::TestCase
   end
 
   test "#by_tracker" do
+    User.current = User.anonymous
     groups = Issue.by_tracker(Project.find(1))
     assert_equal 3, groups.size
     assert_equal 7, groups.inject(0) {|sum, group| sum + group['total'].to_i}
   end
 
   test "#by_version" do
+    User.current = User.anonymous
     groups = Issue.by_version(Project.find(1))
     assert_equal 3, groups.size
     assert_equal 3, groups.inject(0) {|sum, group| sum + group['total'].to_i}
   end
 
   test "#by_priority" do
+    User.current = User.anonymous
     groups = Issue.by_priority(Project.find(1))
     assert_equal 4, groups.size
     assert_equal 7, groups.inject(0) {|sum, group| sum + group['total'].to_i}
   end
 
   test "#by_category" do
+    User.current = User.anonymous
     groups = Issue.by_category(Project.find(1))
     assert_equal 2, groups.size
     assert_equal 3, groups.inject(0) {|sum, group| sum + group['total'].to_i}
   end
 
   test "#by_assigned_to" do
+    User.current = User.anonymous
     groups = Issue.by_assigned_to(Project.find(1))
     assert_equal 2, groups.size
     assert_equal 2, groups.inject(0) {|sum, group| sum + group['total'].to_i}
   end
 
   test "#by_author" do
+    User.current = User.anonymous
     groups = Issue.by_author(Project.find(1))
     assert_equal 4, groups.size
     assert_equal 7, groups.inject(0) {|sum, group| sum + group['total'].to_i}
   end
 
   test "#by_subproject" do
+    User.current = User.anonymous
     groups = Issue.by_subproject(Project.find(1))
-    assert_equal 2, groups.size
-    assert_equal 5, groups.inject(0) {|sum, group| sum + group['total'].to_i}
+    # Private descendant not visible
+    assert_equal 1, groups.size
+    assert_equal 2, groups.inject(0) {|sum, group| sum + group['total'].to_i}
   end
   
   

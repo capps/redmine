@@ -1,5 +1,5 @@
-# redMine - project management software
-# Copyright (C) 2006-2007  Jean-Philippe Lang
+# Redmine - project management software
+# Copyright (C) 2006-2011  Jean-Philippe Lang
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -34,23 +34,27 @@ require 'diff'
 class WikiController < ApplicationController
   default_search_scope :wiki_pages
   before_filter :find_wiki, :authorize
+  before_filter :find_existing_or_new_page, :only => [:show, :edit, :update]
   before_filter :find_existing_page, :only => [:rename, :protect, :history, :diff, :annotate, :add_attachment, :destroy]
   
-  verify :method => :post, :only => [:protect], :redirect_to => { :action => :show }
-
   helper :attachments
   include AttachmentsHelper   
   helper :watchers
 
   # List of pages, sorted alphabetically and by parent (hierarchy)
   def index
-    load_pages_grouped_by_date_without_content
+    load_pages_for_index
+    @pages_by_parent_id = @pages.group_by(&:parent_id)
+  end
+  
+  # List of page, by last update
+  def date_index
+    load_pages_for_index
+    @pages_by_date = @pages.group_by {|p| p.updated_on.to_date}
   end
 
   # display a page (in editing mode if it doesn't exist)
   def show
-    page_title = params[:id]
-    @page = @wiki.find_or_new_page(page_title)
     if @page.new_record?
       if User.current.allowed_to?(:edit_wiki_pages, @project) && editable?
         edit
@@ -82,7 +86,6 @@ class WikiController < ApplicationController
   
   # edit an existing page or a new one
   def edit
-    @page = @wiki.find_or_new_page(params[:id])    
     return render_403 unless editable?
     @page.content = WikiContent.new(:page => @page) if @page.new_record?
     
@@ -93,15 +96,11 @@ class WikiController < ApplicationController
 
     # To prevent StaleObjectError exception when reverting to a previous version
     @content.version = @page.content.version
-  rescue ActiveRecord::StaleObjectError
-    # Optimistic locking exception
-    flash[:error] = l(:notice_locking_conflict)
   end
 
   verify :method => :put, :only => :update, :render => {:nothing => true, :status => :method_not_allowed }
   # Creates a new page or updates an existing one
   def update
-    @page = @wiki.find_or_new_page(params[:id])    
     return render_403 unless editable?
     @page.content = WikiContent.new(:page => @page) if @page.new_record?
     
@@ -131,7 +130,8 @@ class WikiController < ApplicationController
 
   rescue ActiveRecord::StaleObjectError
     # Optimistic locking exception
-    flash[:error] = l(:notice_locking_conflict)
+    flash.now[:error] = l(:notice_locking_conflict)
+    render :action => 'edit'
   end
 
   # rename a page
@@ -146,6 +146,7 @@ class WikiController < ApplicationController
     end
   end
   
+  verify :method => :post, :only => :protect, :redirect_to => { :action => :show }
   def protect
     @page.update_attribute :protected, params[:protected]
     redirect_to :action => 'show', :project_id => @project, :id => @page.title
@@ -215,10 +216,6 @@ class WikiController < ApplicationController
       redirect_to :action => 'show', :project_id => @project, :id => nil
     end
   end
-
-  def date_index
-    load_pages_grouped_by_date_without_content
-  end
   
   def preview
     page = @wiki.find_page(params[:id])
@@ -249,10 +246,24 @@ private
     render_404
   end
   
+  # Finds the requested page or a new page if it doesn't exist
+  def find_existing_or_new_page
+    @page = @wiki.find_or_new_page(params[:id])
+    if @wiki.page_found_with_redirect?
+      redirect_to params.update(:id => @page.title)
+    end
+  end
+  
   # Finds the requested page and returns a 404 error if it doesn't exist
   def find_existing_page
     @page = @wiki.find_page(params[:id])
-    render_404 if @page.nil?
+    if @page.nil?
+      render_404
+      return
+    end
+    if @wiki.page_found_with_redirect?
+      redirect_to params.update(:id => @page.title)
+    end
   end
   
   # Returns true if the current user is allowed to edit the page, otherwise false
@@ -266,14 +277,8 @@ private
     extend helper unless self.instance_of?(helper)
     helper.instance_method(:initial_page_content).bind(self).call(page)
   end
-
-  # eager load information about last updates, without loading text
-  def load_pages_grouped_by_date_without_content
-    @pages = @wiki.pages.find :all, :select => "#{WikiPage.table_name}.*, #{WikiContent.table_name}.updated_on",
-                                    :joins => "LEFT JOIN #{WikiContent.table_name} ON #{WikiContent.table_name}.page_id = #{WikiPage.table_name}.id",
-                                    :order => 'title'
-    @pages_by_date = @pages.group_by {|p| p.updated_on.to_date}
-    @pages_by_parent_id = @pages.group_by(&:parent_id)
-  end
   
+  def load_pages_for_index
+    @pages = @wiki.pages.with_updated_on.all(:order => 'title', :include => {:wiki => :project})
+  end
 end

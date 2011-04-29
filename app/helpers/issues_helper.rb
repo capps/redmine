@@ -1,5 +1,5 @@
-# redMine - project management software
-# Copyright (C) 2006  Jean-Philippe Lang
+# Redmine - project management software
+# Copyright (C) 2006-2011  Jean-Philippe Lang
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -54,20 +54,30 @@ module IssuesHelper
       "<strong>#{@cached_label_assigned_to}</strong>: #{issue.assigned_to}<br />" +
       "<strong>#{@cached_label_priority}</strong>: #{issue.priority.name}"
   end
+  
+  def issue_heading(issue)
+    h("#{issue.tracker} ##{issue.id}")
+  end
     
   def render_issue_subject_with_tree(issue)
     s = ''
-    issue.ancestors.each do |ancestor|
+    ancestors = issue.root? ? [] : issue.ancestors.visible.all
+    ancestors.each do |ancestor|
       s << '<div>' + content_tag('p', link_to_issue(ancestor))
     end
-    s << '<div>' + content_tag('h3', h(issue.subject))
-    s << '</div>' * (issue.ancestors.size + 1)
+    s << '<div>'
+    subject = h(issue.subject)
+    if issue.is_private?
+      subject = content_tag('span', l(:field_is_private), :class => 'private') + ' ' + subject
+    end
+    s << content_tag('h3', subject)
+    s << '</div>' * (ancestors.size + 1)
     s
   end
   
   def render_descendants_tree(issue)
     s = '<form><table class="list issues">'
-    issue_list(issue.descendants.sort_by(&:lft)) do |child, level|
+    issue_list(issue.descendants.visible.sort_by(&:lft)) do |child, level|
       s << content_tag('tr',
              content_tag('td', check_box_tag("ids[]", child.id, false, :id => nil), :class => 'checkbox') +
              content_tag('td', link_to_issue(child, :truncate => 60), :class => 'subject') +
@@ -99,6 +109,24 @@ module IssuesHelper
     s
   end
   
+  def issues_destroy_confirmation_message(issues)
+    issues = [issues] unless issues.is_a?(Array)
+    message = l(:text_issues_destroy_confirmation)
+    descendant_count = issues.inject(0) {|memo, i| memo += (i.right - i.left - 1)/2}
+    if descendant_count > 0
+      issues.each do |issue|
+        next if issue.root?
+        issues.each do |other_issue|
+          descendant_count -= 1 if issue.is_descendant_of?(other_issue)
+        end
+      end
+      if descendant_count > 0
+        message << "\n" + l(:text_issues_destroy_descendants_confirmation, :count => descendant_count)
+      end
+    end
+    message
+  end
+  
   def sidebar_queries
     unless @sidebar_queries
       # User can see public queries and his own queries
@@ -106,11 +134,30 @@ module IssuesHelper
       # Project specific queries and global queries
       visible << (@project.nil? ? ["project_id IS NULL"] : ["project_id IS NULL OR project_id = ?", @project.id])
       @sidebar_queries = Query.find(:all, 
-                                    :select => 'id, name',
+                                    :select => 'id, name, is_public',
                                     :order => "name ASC",
                                     :conditions => visible.conditions)
     end
     @sidebar_queries
+  end
+
+  def query_links(title, queries)
+    # links to #index on issues/show
+    url_params = controller_name == 'issues' ? {:controller => 'issues', :action => 'index', :project_id => @project} : params
+  
+    content_tag('h3', title) +
+      queries.collect {|query|
+          link_to(h(query.name), url_params.merge(:query_id => query))
+        }.join('<br />')
+  end
+  
+  def render_sidebar_queries
+    out = ''
+    queries = sidebar_queries.select {|q| !q.is_public?}
+    out << query_links(l(:label_my_queries), queries) if queries.any?
+    queries = sidebar_queries.select {|q| q.is_public?}
+    out << query_links(l(:label_query_plural), queries) if queries.any?
+    out
   end
 
   def show_detail(detail, no_html=false)
@@ -135,6 +182,10 @@ module IssuesHelper
         label = l(:field_parent_issue)
         value = "##{detail.value}" unless detail.value.blank?
         old_value = "##{detail.old_value}" unless detail.old_value.blank?
+        
+      when detail.prop_key == 'is_private'
+        value = l(detail.value == "0" ? :general_text_No : :general_text_Yes) unless detail.value.blank?
+        old_value = l(detail.old_value == "0" ? :general_text_No : :general_text_Yes) unless detail.old_value.blank?
       end
     when 'cf'
       custom_field = CustomField.find_by_id(detail.prop_key)
@@ -164,7 +215,16 @@ module IssuesHelper
       end
     end
     
-    if !detail.value.blank?
+    if detail.property == 'attr' && detail.prop_key == 'description'
+      s = l(:text_journal_changed_no_detail, :label => label)
+      unless no_html
+        diff_link = link_to 'diff', 
+          {:controller => 'journals', :action => 'diff', :id => detail.journal_id, :detail_id => detail.id},
+          :title => l(:label_view_diff)
+        s << " (#{ diff_link })"
+      end
+      s
+    elsif !detail.value.blank?
       case detail.property
       when 'attr', 'cf'
         if !detail.old_value.blank?

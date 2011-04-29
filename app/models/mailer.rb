@@ -1,5 +1,5 @@
-# redMine - project management software
-# Copyright (C) 2006-2007  Jean-Philippe Lang
+# Redmine - project management software
+# Copyright (C) 2006-2011  Jean-Philippe Lang
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -85,7 +85,7 @@ class Mailer < ActionMailer::Base
     subject l(:mail_subject_reminder, :count => issues.size, :days => days)
     body :issues => issues,
          :days => days,
-         :issues_url => url_for(:controller => 'issues', :action => 'index', :set_filter => 1, :assigned_to_id => user.id, :sort_key => 'due_date', :sort_order => 'asc')
+         :issues_url => url_for(:controller => 'issues', :action => 'index', :set_filter => 1, :assigned_to_id => user.id, :sort => 'due_date:asc')
     render_multipart('reminder', body)
   end
 
@@ -114,11 +114,11 @@ class Mailer < ActionMailer::Base
     added_to_url = ''
     case container.class.name
     when 'Project'
-      added_to_url = url_for(:controller => 'projects', :action => 'list_files', :id => container)
+      added_to_url = url_for(:controller => 'files', :action => 'index', :project_id => container)
       added_to = "#{l(:label_project)}: #{container}"
       recipients container.project.notified_users.select {|user| user.allowed_to?(:view_files, container.project)}.collect  {|u| u.mail}
     when 'Version'
-      added_to_url = url_for(:controller => 'projects', :action => 'list_files', :id => container.project_id)
+      added_to_url = url_for(:controller => 'files', :action => 'index', :project_id => container.project)
       added_to = "#{l(:label_version)}: #{container.name}"
       recipients container.project.notified_users.select {|user| user.allowed_to?(:view_files, container.project)}.collect  {|u| u.mail}
     when 'Document'
@@ -147,6 +147,24 @@ class Mailer < ActionMailer::Base
     body :news => news,
          :news_url => url_for(:controller => 'news', :action => 'show', :id => news)
     render_multipart('news_added', body)
+  end
+  
+  # Builds a tmail object used to email recipients of a news' project when a news comment is added.
+  #
+  # Example:
+  #   news_comment_added(comment) => tmail object
+  #   Mailer.news_comment_added(comment) => sends an email to the news' project recipients
+  def news_comment_added(comment)
+    news = comment.commented
+    redmine_headers 'Project' => news.project.identifier
+    message_id comment
+    recipients news.recipients
+    cc news.watcher_recipients
+    subject "Re: [#{news.project.name}] #{l(:label_news)}: #{news.title}"
+    body :news => news,
+         :comment => comment,
+         :news_url => url_for(:controller => 'news', :action => 'show', :id => news)
+    render_multipart('news_comment_added', body)
   end
 
   # Builds a tmail object used to email the recipients of the specified message that was posted. 
@@ -296,7 +314,7 @@ class Mailer < ActionMailer::Base
       if raise_errors
         raise e
       elsif mylogger
-        mylogger.error "The following error occured while sending email notification: \"#{e.message}\". Check your configuration in config/email.yml."
+        mylogger.error "The following error occured while sending email notification: \"#{e.message}\". Check your configuration in config/configuration.yml."
       end
     ensure
       self.class.raise_delivery_errors = raise_errors
@@ -326,7 +344,7 @@ class Mailer < ActionMailer::Base
                                           :conditions => s.conditions
                                     ).group_by(&:assigned_to)
     issues_by_assignee.each do |assignee, issues|
-      deliver_reminder(assignee, issues, days) unless assignee.nil?
+      deliver_reminder(assignee, issues, days) if assignee && assignee.active?
     end
   end
   
